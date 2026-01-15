@@ -19,6 +19,7 @@ ALLOWED_FIELDS = {
     "allowed-tools",
     "metadata",
     "compatibility",
+    "composition",  # NEW: Skill composition types for chaining
 }
 
 

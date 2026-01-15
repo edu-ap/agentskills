@@ -14,6 +14,7 @@ class SkillProperties:
         license: License for the skill (optional)
         compatibility: Compatibility information for the skill (optional)
         allowed_tools: Tool patterns the skill requires (optional, experimental)
+        composition: Input/output type metadata for skill chaining (optional)
         metadata: Key-value pairs for client-specific properties (defaults to
             empty dict; omitted from to_dict() output when empty)
     """
@@ -23,6 +24,7 @@ class SkillProperties:
     license: Optional[str] = None
     compatibility: Optional[str] = None
     allowed_tools: Optional[str] = None
+    composition: Optional[dict] = None
     metadata: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
@@ -34,6 +36,8 @@ class SkillProperties:
             result["compatibility"] = self.compatibility
         if self.allowed_tools is not None:
             result["allowed-tools"] = self.allowed_tools
+        if self.composition is not None:
+            result["composition"] = self.composition
         if self.metadata:
             result["metadata"] = self.metadata
         return result

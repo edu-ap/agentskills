@@ -283,3 +283,210 @@ def list_skills(skills_dir: Path = None) -> dict[str, dict]:
         }
 
     return result
+
+
+# ============================================================
+# SKILL CHAINING
+# ============================================================
+
+@dataclass
+class ChainResult:
+    """Result of running a skill chain."""
+    success: bool
+    output: Any
+    error: Optional[str] = None
+    steps: list[dict] = field(default_factory=list)  # Track each step
+
+
+def parse_chain(chain_spec: str) -> list[tuple[str, list[str]]]:
+    """
+    Parse a chain specification into skill names and args.
+
+    Format: "skill-a | skill-b --arg value | skill-c"
+
+    Returns:
+        List of (skill_name, args) tuples
+    """
+    import shlex
+
+    steps = []
+    for part in chain_spec.split("|"):
+        part = part.strip()
+        if not part:
+            continue
+
+        tokens = shlex.split(part)
+        skill_name = tokens[0]
+        args = tokens[1:] if len(tokens) > 1 else []
+        steps.append((skill_name, args))
+
+    return steps
+
+
+def chain_skills(
+    chain_spec: str,
+    validate: bool = True,
+    skills_dir: Path = None
+) -> ChainResult:
+    """
+    Run a chain of skills, piping output from one to the next.
+
+    Args:
+        chain_spec: Pipeline specification like "skill-a | skill-b"
+        validate: If True, validate composition before running
+        skills_dir: Directory containing skills (optional)
+
+    Returns:
+        ChainResult with final output or error
+
+    Example:
+        result = chain_skills("hubspot-read | customer-intel")
+    """
+    from .composition import check_composition
+
+    steps = parse_chain(chain_spec)
+
+    if not steps:
+        return ChainResult(
+            success=False,
+            output=None,
+            error="Empty chain specification"
+        )
+
+    if len(steps) < 2:
+        return ChainResult(
+            success=False,
+            output=None,
+            error="Chain requires at least 2 skills (use 'run' for single skill)"
+        )
+
+    # Discover skills
+    skills = discover_skills(skills_dir)
+
+    # Validate all skills exist and have scripts
+    for skill_name, _ in steps:
+        if skill_name not in skills:
+            return ChainResult(
+                success=False,
+                output=None,
+                error=f"Unknown skill: {skill_name}"
+            )
+        skill_dir = skills[skill_name]
+        if not (skill_dir / "scripts" / "run.py").exists():
+            return ChainResult(
+                success=False,
+                output=None,
+                error=f"Skill '{skill_name}' has no scripts/run.py"
+            )
+
+    # Validate composition between adjacent skills
+    if validate:
+        for i in range(len(steps) - 1):
+            source_name = steps[i][0]
+            target_name = steps[i + 1][0]
+
+            source_dir = skills[source_name]
+            target_dir = skills[target_name]
+
+            comp_result = check_composition(source_dir, target_dir)
+            if not comp_result.valid:
+                return ChainResult(
+                    success=False,
+                    output=None,
+                    error=f"Composition failed at step {i+1}: {comp_result.reason}"
+                )
+
+    # Check auth for all skills before running
+    for skill_name, _ in steps:
+        auth_ok, auth_msg = check_auth(skill_name)
+        if not auth_ok:
+            return ChainResult(
+                success=False,
+                output=None,
+                error=f"Auth failed for '{skill_name}': {auth_msg}"
+            )
+
+    # Execute the chain
+    chain_steps = []
+    current_input = None
+
+    for i, (skill_name, args) in enumerate(steps):
+        skill_dir = skills[skill_name]
+        script_path = skill_dir / "scripts" / "run.py"
+
+        # Build command with --json flag and any user args
+        cmd = [sys.executable, str(script_path), "--json"] + args
+
+        # If we have input from previous step, pass via stdin
+        stdin_data = None
+        if current_input is not None:
+            if isinstance(current_input, (dict, list)):
+                stdin_data = json.dumps(current_input)
+            else:
+                stdin_data = str(current_input)
+
+        try:
+            result = subprocess.run(
+                cmd,
+                input=stdin_data,
+                capture_output=True,
+                text=True,
+                timeout=60,
+                cwd=str(skill_dir),
+            )
+
+            step_info = {
+                "skill": skill_name,
+                "success": result.returncode == 0,
+                "exit_code": result.returncode,
+            }
+
+            if result.returncode != 0:
+                step_info["error"] = result.stderr.strip() or f"Exit code {result.returncode}"
+                chain_steps.append(step_info)
+                return ChainResult(
+                    success=False,
+                    output=None,
+                    error=f"Step {i+1} ({skill_name}) failed: {step_info['error']}",
+                    steps=chain_steps
+                )
+
+            # Parse output for next step
+            try:
+                current_input = json.loads(result.stdout)
+            except json.JSONDecodeError:
+                current_input = result.stdout
+
+            step_info["output_type"] = "json" if isinstance(current_input, (dict, list)) else "text"
+            chain_steps.append(step_info)
+
+        except subprocess.TimeoutExpired:
+            chain_steps.append({
+                "skill": skill_name,
+                "success": False,
+                "error": "Timeout (60s)"
+            })
+            return ChainResult(
+                success=False,
+                output=None,
+                error=f"Step {i+1} ({skill_name}) timed out",
+                steps=chain_steps
+            )
+        except Exception as e:
+            chain_steps.append({
+                "skill": skill_name,
+                "success": False,
+                "error": str(e)
+            })
+            return ChainResult(
+                success=False,
+                output=None,
+                error=f"Step {i+1} ({skill_name}) error: {e}",
+                steps=chain_steps
+            )
+
+    return ChainResult(
+        success=True,
+        output=current_input,
+        steps=chain_steps
+    )

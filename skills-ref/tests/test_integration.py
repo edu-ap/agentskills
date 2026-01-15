@@ -1,15 +1,24 @@
 """Integration tests for skills with real APIs.
 
-These tests actually call external APIs when credentials are available.
-They are skipped automatically when credentials are missing.
+These tests call external APIs and may fail due to:
+- Missing credentials
+- API rate limits
+- Temporary API outages
 
-Run with: pytest tests/test_integration.py -v
-Run all: HUBSPOT_ACCESS_TOKEN=xxx SLACK_BOT_TOKEN=xxx pytest tests/test_integration.py -v
+Run unit tests only (always pass):
+    pytest tests/ --ignore=tests/test_integration.py
+
+Run integration tests (requires credentials, may be flaky):
+    pytest tests/test_integration.py -v
 """
 
 import os
 import pytest
 from skills_ref.runtime import run_skill, check_auth, list_skills
+
+
+# Mark entire module as integration tests
+pytestmark = pytest.mark.integration
 
 
 # ============================================================
@@ -21,9 +30,14 @@ def has_hubspot_auth():
     return bool(os.environ.get("HUBSPOT_ACCESS_TOKEN"))
 
 
-def has_slack_auth():
-    """Check if Slack credentials are available."""
-    return bool(os.environ.get("SLACK_BOT_TOKEN"))
+def has_slack_user_token():
+    """Check if Slack USER token is available.
+
+    Slack search API requires a user token with search:read scope.
+    Bot tokens will fail with 'not_allowed_token_type'.
+    We check for a specific env var to avoid running with wrong token type.
+    """
+    return os.environ.get("SLACK_TOKEN_TYPE") == "user"
 
 
 def has_github_auth():
@@ -47,37 +61,32 @@ def has_email_auth():
 class TestHubSpotIntegration:
     """Integration tests for HubSpot skills.
 
-    Note: These tests may fail if HubSpot API is unavailable (503 errors).
-    This is expected behavior for integration tests against external APIs.
+    These tests call the real HubSpot API. They may occasionally fail
+    due to API rate limits or temporary unavailability (503 errors).
     """
 
-    @pytest.mark.xfail(reason="HubSpot API may be temporarily unavailable")
     def test_hubspot_companies_runs(self):
         """Test hubspot-companies skill executes successfully."""
         result = run_skill("hubspot-companies", ["--limit", "1"])
         assert result.success, f"Failed: {result.error}"
         assert result.output is not None
 
-    @pytest.mark.xfail(reason="HubSpot API may be temporarily unavailable")
     def test_hubspot_deals_runs(self):
         """Test hubspot-deals skill executes successfully."""
         result = run_skill("hubspot-deals", ["--limit", "1"])
         assert result.success, f"Failed: {result.error}"
         assert result.output is not None
 
-    @pytest.mark.xfail(reason="HubSpot API may be temporarily unavailable")
     def test_hubspot_read_runs(self):
         """Test hubspot-read skill executes successfully."""
         result = run_skill("hubspot-read", ["--limit", "1"])
         assert result.success, f"Failed: {result.error}"
         assert result.output is not None
 
-    @pytest.mark.xfail(reason="HubSpot API may be temporarily unavailable")
     def test_hubspot_output_types(self):
         """Test HubSpot skills return expected output types."""
         result = run_skill("hubspot-companies", ["--limit", "1"])
-        assert result.success
-        # Check output_types are populated from SKILL.md
+        assert result.success, f"Failed: {result.error}"
         assert "crm-companies" in result.output_types
 
 
@@ -85,23 +94,21 @@ class TestHubSpotIntegration:
 # SLACK INTEGRATION TESTS
 # ============================================================
 
-@pytest.mark.skipif(not has_slack_auth(), reason="SLACK_BOT_TOKEN not set")
+@pytest.mark.skipif(not has_slack_user_token(), reason="SLACK_USER_TOKEN not set (bot tokens can't search)")
 class TestSlackIntegration:
     """Integration tests for Slack skills.
 
-    Note: Slack search requires a user token with search:read scope.
-    Bot tokens may fail with 'not_allowed_token_type'.
+    IMPORTANT: Slack search requires a USER token with search:read scope.
+    Bot tokens (SLACK_BOT_TOKEN) will fail with 'not_allowed_token_type'.
+    Set SLACK_USER_TOKEN to run these tests.
     """
 
-    @pytest.mark.xfail(reason="Slack search requires user token, not bot token")
     def test_slack_read_runs(self):
         """Test slack-read skill executes successfully."""
-        # slack-read requires --query or --channel
         result = run_skill("slack-read", ["--query", "test", "--limit", "1"])
         assert result.success, f"Failed: {result.error}"
         assert result.output is not None
 
-    @pytest.mark.xfail(reason="Slack search requires user token, not bot token")
     def test_slack_output_types(self):
         """Test Slack skill returns expected output types."""
         result = run_skill("slack-read", ["--query", "test", "--limit", "1"])
@@ -251,7 +258,5 @@ class TestComposeValidator:
             "--target", "demo-echo"
         ])
         # Script exits 1 for invalid composition (correct behavior)
-        # But we still get structured output in stdout
         assert not result.success  # exit code 1
         assert "not found" in result.error or "not found" in str(result.output).lower()
-

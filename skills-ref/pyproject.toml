@@ -28,3 +28,13 @@ dev = [
     "pytest>=7.0",
     "ruff>=0.8.0",
 ]
+
+[tool.pytest.ini_options]
+# Register custom markers
+markers = [
+    "integration: marks tests that call external APIs (may be flaky)",
+]
+# By default, ignore integration tests - they require credentials and may fail
+# due to external API issues. Run them explicitly with:
+#   pytest tests/test_integration.py -v
+addopts = "--ignore=tests/test_integration.py"

@@ -58,18 +58,21 @@ class TestHubSpotIntegration:
         assert result.success, f"Failed: {result.error}"
         assert result.output is not None
 
+    @pytest.mark.xfail(reason="HubSpot API may be temporarily unavailable")
     def test_hubspot_deals_runs(self):
         """Test hubspot-deals skill executes successfully."""
         result = run_skill("hubspot-deals", ["--limit", "1"])
         assert result.success, f"Failed: {result.error}"
         assert result.output is not None
 
+    @pytest.mark.xfail(reason="HubSpot API may be temporarily unavailable")
     def test_hubspot_read_runs(self):
         """Test hubspot-read skill executes successfully."""
         result = run_skill("hubspot-read", ["--limit", "1"])
         assert result.success, f"Failed: {result.error}"
         assert result.output is not None
 
+    @pytest.mark.xfail(reason="HubSpot API may be temporarily unavailable")
     def test_hubspot_output_types(self):
         """Test HubSpot skills return expected output types."""
         result = run_skill("hubspot-companies", ["--limit", "1"])
@@ -201,37 +204,54 @@ class TestSkillDiscovery:
 
 
 # ============================================================
-# CHAIN INTEGRATION TESTS
+# COMPOSE-VALIDATOR TESTS (No auth needed - reads metadata only)
 # ============================================================
 
-class TestChainIntegration:
-    """Integration tests for skill chaining."""
+class TestComposeValidator:
+    """Tests for the compose-validator skill.
 
-    def test_demo_echo_chain(self):
-        """Test chaining demo-echo (no auth needed)."""
-        from skills_ref.runtime import chain_skills
+    This skill is key to the LLM-driven composition approach:
+    The LLM can choose to use this skill to check compatibility
+    before running skills, rather than having infrastructure force it.
+    """
 
-        result = chain_skills("demo-echo | demo-echo")
-        assert result.success
-        assert len(result.steps) == 2
+    def test_compose_validator_runs(self):
+        """Test compose-validator executes successfully."""
+        result = run_skill("compose-validator", [
+            "--source", "hubspot-read",
+            "--target", "demo-echo"
+        ])
+        assert result.success, f"Failed: {result.error}"
         assert result.output is not None
 
-    def test_demo_echo_three_step_chain(self):
-        """Test three-step chain with demo-echo."""
-        from skills_ref.runtime import chain_skills
-
-        result = chain_skills("demo-echo | demo-echo | demo-echo")
+    def test_compose_validator_valid_composition(self):
+        """Test compose-validator correctly identifies valid composition."""
+        result = run_skill("compose-validator", [
+            "--source", "demo-echo",
+            "--target", "demo-echo",
+            "--json"
+        ])
         assert result.success
-        assert len(result.steps) == 3
+        # demo-echo has no composition constraints, so should be valid
+        assert result.output.get("valid") is True
 
-    @pytest.mark.skipif(not has_hubspot_auth(), reason="HUBSPOT_ACCESS_TOKEN not set")
-    def test_hubspot_chain(self):
-        """Test chaining HubSpot skills."""
-        from skills_ref.runtime import chain_skills
-
-        # hubspot-companies | hubspot-read should work (both output crm data)
-        result = chain_skills(
-            "hubspot-companies --limit 1 | demo-echo",
-            validate=False  # Types don't match, but we can still run
-        )
+    def test_compose_validator_returns_composition_result(self):
+        """Test compose-validator returns expected output type."""
+        result = run_skill("compose-validator", [
+            "--source", "hubspot-companies",
+            "--target", "demo-echo"
+        ])
         assert result.success
+        assert "composition-result" in result.output_types
+
+    def test_compose_validator_invalid_skill(self):
+        """Test compose-validator handles invalid skill names."""
+        result = run_skill("compose-validator", [
+            "--source", "nonexistent-skill",
+            "--target", "demo-echo"
+        ])
+        # Script exits 1 for invalid composition (correct behavior)
+        # But we still get structured output in stdout
+        assert not result.success  # exit code 1
+        assert "not found" in result.error or "not found" in str(result.output).lower()
+
